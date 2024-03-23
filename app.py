@@ -92,13 +92,6 @@ def verify_razorpay_signature():
         razorpay_client = razorpay.Client(auth=(RAZORPAY_ID, RAZORPAY_KEY_SECRET))
 
         request_body = request.json
-        # print(request_body)
-        # print(request_body['razorpay_order_id'])
-        # generated_signature = hmac.new(request_body['razorpay_order_id'] + "|" + request_body['razorpay_payment_id'], RAZORPAY_KEY_SECRET, hashlib.sha256).digest()
-        # print("hi")
-        # if (generated_signature == request_body['razorpay_signature']):
-        #     response["data"]["payment_status"] = "verified"
-        # print("hi")
 
         payment_status = razorpay_client.utility.verify_payment_signature({
             'razorpay_order_id': request_body["razorpay_order_id"],
