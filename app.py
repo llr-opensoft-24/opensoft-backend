@@ -8,12 +8,18 @@ from models import User
 import datetime
 import arrow
 import jwt
+import razorpay
+import hmac
+import hashlib
 
 load_dotenv()
 app = Flask(__name__)
 bcrypt = Bcrypt(app)
 
 DB_URI = os.getenv('DB_URI')
+RAZORPAY_ID = os.getenv('RAZORPAY_ID')
+RAZORPAY_KEY_SECRET = os.getenv('RAZORPAY_KEY_SECRET')
+
 
 try:
     client = MongoClient(DB_URI)
@@ -40,6 +46,75 @@ def hello_world():
     response["error"] = None
     response["results"] = {}
     return response
+
+
+@app.route('/order', methods=['POST'])
+def create_razorpay_order():
+    response = {}
+    response["error"] = None
+    response["data"] = {}
+    amount = request.args['amount']
+    print(amount)
+    
+    data = {
+        "amount": int(amount)*100,
+        "currency": "INR",
+        "receipt": "receipt#1",
+        "notes": {
+            "key1": "value3",
+            "key2": "value2"
+        }
+    }
+
+    try:
+        razorpay_client = razorpay.Client(auth=(RAZORPAY_ID, RAZORPAY_KEY_SECRET))
+        razorpay_response = razorpay_client.order.create(data=data)
+
+        order_id = razorpay_response['id']
+        order_status = razorpay_response['status']
+        response['data']['order_id'] = order_id
+        response['data']['order_status'] = order_status
+        response['data']['amount'] = int(amount) * 100
+        
+        return jsonify(response)
+    except Exception as e:
+        response['error'] = str(e)
+        return response
+    
+@app.route('/verify', methods=['POST'])
+def verify_razorpay_signature():
+    response = {}
+    response["error"] = None
+    response["data"] = {}
+
+    
+    try:
+        razorpay_client = razorpay.Client(auth=(RAZORPAY_ID, RAZORPAY_KEY_SECRET))
+
+        request_body = request.json
+        # print(request_body)
+        # print(request_body['razorpay_order_id'])
+        # generated_signature = hmac.new(request_body['razorpay_order_id'] + "|" + request_body['razorpay_payment_id'], RAZORPAY_KEY_SECRET, hashlib.sha256).digest()
+        # print("hi")
+        # if (generated_signature == request_body['razorpay_signature']):
+        #     response["data"]["payment_status"] = "verified"
+        # print("hi")
+
+        payment_status = razorpay_client.utility.verify_payment_signature({
+            'razorpay_order_id': request_body["razorpay_order_id"],
+            'razorpay_payment_id': request_body["razorpay_payment_id"],
+            'razorpay_signature': request_body["razorpay_signature"]
+        })
+        if payment_status == True:
+            response['data']['payment_status'] = True
+        else:
+            response['data']['payment_status'] = False
+        return response
+    except Exception as e:
+        response['error'] = str(e)
+        return response
+
+    
 
 
 @app.route("/register",methods=["POST"])
@@ -102,12 +177,6 @@ def login():
     
     response["error"] = "Method not allowed!"
     return response
-
-
-
-
-        
-        
     
 
 
