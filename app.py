@@ -215,7 +215,70 @@ def login():
     response["error"] = "Method not allowed!"
     return response
     
+# search
+@app.route("/search")
+def search_movies():
+    response = {}
 
+
+    query = request.args.get("q")
+    pipeline =[
+          {
+            '$search': {
+                'index': 'rrf-text-autocomplete',
+                'autocomplete': {
+                            'query': query, 
+                            'path': 'title',
+                            'tokenOrder': 'any',
+                            'fuzzy': {
+                                'maxEdits': 2,
+                                'prefixLength': 3
+                            }
+                        }
+                }
+            },
+        {
+            '$limit': 10
+        },
+        {
+            '$project': {
+                '_id': 0, 
+                'plot': 1, 
+                'title': 1, 
+                'cast': 1,
+                'genres': 1,
+                'runtime': 1,
+                'rated': 1,
+                'cast': 1,
+                'poster': 1,
+                'fullplot': 1,
+                'languages': 1,
+                'released': 1,
+                'directors': 1,
+                'writer' : 1,
+                'awards': 1,
+                'year': 1,
+                'imdb': 1,
+                'countries': 1,
+                'type': 1,
+                'lastupdated': 1,
+                'num_mflix_comments': 1,
+                'score' : {"$meta": "searchScore"}
+            }
+        }
+    ]
+
+    result = client["sample_mflix"]["movies"].aggregate(pipeline)
+
+    output = []
+    for movie in result:
+        print(movie['title'])
+        output.append(movie)
+
+
+    
+    response = {"results": output}
+    return jsonify(response)
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=8080)
