@@ -21,7 +21,9 @@ DB_URI = os.getenv('DB_URI')
 RAZORPAY_ID = os.getenv('RAZORPAY_ID')
 RAZORPAY_KEY_SECRET = os.getenv('RAZORPAY_KEY_SECRET')
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
-
+DB_NAME = os.getenv("DB_NAME")
+MOVIES_COLLECTION_NAME = os.getenv("MOVIES_COLLECTION_NAME")
+AUTO_COMPLETE_INDEX_NAME = os.getenv("AUTO_COMPLETE_INDEX_NAME")
 
 try:
     client = MongoClient(DB_URI)
@@ -61,7 +63,7 @@ def verify_token(func):
             response['message'] = 'Please login to get access'
             response['error'] = 'Token is missing'
             return response, 401
-        print(token)
+
         try:
             decoded_token = jwt.decode(token, verify=True, key=JWT_SECRET_KEY, algorithms=["HS256"])
             user_id = decoded_token['user_id']
@@ -170,6 +172,7 @@ def register():
         user_collection = db["user"]
         if user_collection.find_one({"email": data["email"]}):
             response["error"]="User already exists!"
+            response["message"] = "User already exists!"
             return response
 
         new_user = User(username=data["username"],email=data["email"],password=hashed_password,createdat=datetime.datetime.utcnow(),updatedat=datetime.datetime.utcnow())
@@ -177,7 +180,8 @@ def register():
 
         response["message"] = "Account created successfully"
         return response
-    response["error"] = "Wrong request type"
+    else:
+        response["error"] = "Wrong request type"
     return response
 
 
@@ -215,70 +219,71 @@ def login():
     response["error"] = "Method not allowed!"
     return response
     
-# search
+
 @app.route("/search")
-def search_movies():
+@verify_token
+def search_movies(user_id):
     response = {}
-
-
-    query = request.args.get("q")
-    pipeline =[
-          {
-            '$search': {
-                'index': 'rrf-text-autocomplete',
-                'autocomplete': {
-                            'query': query, 
-                            'path': 'title',
-                            'tokenOrder': 'any',
-                            'fuzzy': {
-                                'maxEdits': 2,
-                                'prefixLength': 3
+    response["error"] = None
+    response["data"] = {}
+    response["message"] = ''
+    try:
+        query = request.args.get("q")
+        pipeline =[
+            {
+                '$search': {
+                    'index': AUTO_COMPLETE_INDEX_NAME,
+                    'autocomplete': {
+                                'query': query, 
+                                'path': 'title',
+                                'tokenOrder': 'any',
+                                'fuzzy': {
+                                    'maxEdits': 2,
+                                    'prefixLength': 3
+                                }
                             }
-                        }
-                }
+                    }
+                },
+            {
+                '$limit': 10
             },
-        {
-            '$limit': 10
-        },
-        {
-            '$project': {
-                '_id': 0, 
-                'plot': 1, 
-                'title': 1, 
-                'cast': 1,
-                'genres': 1,
-                'runtime': 1,
-                'rated': 1,
-                'cast': 1,
-                'poster': 1,
-                'fullplot': 1,
-                'languages': 1,
-                'released': 1,
-                'directors': 1,
-                'writer' : 1,
-                'awards': 1,
-                'year': 1,
-                'imdb': 1,
-                'countries': 1,
-                'type': 1,
-                'lastupdated': 1,
-                'num_mflix_comments': 1,
-                'score' : {"$meta": "searchScore"}
+            {
+                '$project': {
+                    '_id': 0, 
+                    'title': 1, 
+                    'plot': 1, 
+                    'cast': 1,
+                    'genres': 1,
+                    'runtime': 1,
+                    'rated': 1,
+                    'cast': 1,
+                    'poster': 1,
+                    'fullplot': 1,
+                    'languages': 1,
+                    'released': 1,
+                    'directors': 1,
+                    'writer' : 1,
+                    'awards': 1,
+                    'year': 1,
+                    'imdb': 1,
+                    'countries': 1,
+                    'type': 1,
+                    'lastupdated': 1,
+                    'score' : {"$meta": "searchScore"}
+                }
             }
-        }
-    ]
-
-    result = client["sample_mflix"]["movies"].aggregate(pipeline)
-
-    output = []
-    for movie in result:
-        print(movie['title'])
-        output.append(movie)
-
-
-    
-    response = {"results": output}
-    return jsonify(response)
+        ]
+        query_db_result = client[DB_NAME][MOVIES_COLLECTION_NAME].aggregate(pipeline)
+        movies_data = []
+        for movie in query_db_result:
+            print(movie['title'])
+            movies_data.append(movie)
+        response["data"]= movies_data
+    except Exception as e:
+        response["error"] = str(e)
+        response["message"] = "Search is not working"
+        return response
+    return response
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=8080)
