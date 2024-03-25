@@ -10,6 +10,7 @@ import arrow
 import jwt
 import razorpay
 import hmac
+from functools import wraps
 import hashlib
 
 load_dotenv()
@@ -19,6 +20,7 @@ bcrypt = Bcrypt(app)
 DB_URI = os.getenv('DB_URI')
 RAZORPAY_ID = os.getenv('RAZORPAY_ID')
 RAZORPAY_KEY_SECRET = os.getenv('RAZORPAY_KEY_SECRET')
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 
 
 try:
@@ -34,29 +36,68 @@ except ConnectionFailure as e:
     print("Could not connect to MongoDB: %s" % e)
 
 
+
+
 @app.after_request
 def add_cors_headers(response):
     response.headers['Access-Control-Allow-Origin'] = '*'
     response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
     return response
 
+
+def verify_token(func):
+    @wraps(func)
+    def decorated_function(*args, **kwargs):
+        response = {}
+        response["error"] = None
+        response["message"] = ""
+        response["data"] = {}
+        token = None
+
+        if 'Authorization' in request.headers:
+            token = request.headers['Authorization']
+
+        if not token:
+            response['message'] = 'Please login to get access'
+            response['error'] = 'Token is missing'
+            return response, 401
+        print(token)
+        try:
+            decoded_token = jwt.decode(token, verify=True, key=JWT_SECRET_KEY, algorithms=["HS256"])
+            user_id = decoded_token['user_id']
+
+        except Exception as e:
+            print(str(e))
+            response['message'] = "Login session expired"
+            response["error"] = "Token is invalid"
+            return response, 401
+
+        return func(user_id, *args, **kwargs)
+
+    return decorated_function
+
+
+
 @app.route('/', methods=['GET'])
-def hello_world():
+@verify_token
+def hello_world(user_id):
     response = {}
     response["error"] = None
-    response["results"] = {}
+    response["data"] = {}
     return response
 
 
+
 @app.route('/order', methods=['POST'])
-def create_razorpay_order():
+@verify_token
+def create_razorpay_order(user_id):
     response = {}
     response["error"] = None
     response["data"] = {}
     amount = request.args['amount']
     print(amount)
     
-    data = {
+    rz_data = {
         "amount": int(amount)*100,
         "currency": "INR",
         "receipt": "receipt#1",
@@ -68,7 +109,7 @@ def create_razorpay_order():
 
     try:
         razorpay_client = razorpay.Client(auth=(RAZORPAY_ID, RAZORPAY_KEY_SECRET))
-        razorpay_response = razorpay_client.order.create(data=data)
+        razorpay_response = razorpay_client.order.create(data=rz_data)
 
         order_id = razorpay_response['id']
         order_status = razorpay_response['status']
@@ -81,13 +122,16 @@ def create_razorpay_order():
         response['error'] = str(e)
         return response
     
+
+
+
 @app.route('/verify', methods=['POST'])
-def verify_razorpay_signature():
+@verify_token
+def verify_razorpay_signature(user_id):
     response = {}
     response["error"] = None
     response["data"] = {}
-
-    
+    response["message"] = ""
     try:
         razorpay_client = razorpay.Client(auth=(RAZORPAY_ID, RAZORPAY_KEY_SECRET))
 
@@ -112,10 +156,11 @@ def verify_razorpay_signature():
 
 @app.route("/register",methods=["POST"])
 def register():
+    response = {}
+    response["error"] = None
+    response["data"] = {}
+    response["message"] = ''
     if request.method == "POST":
-        response = {}
-        response["error"] = None
-        response["results"] = {}
         data = request.get_json()
         print(data)
         hashed_password = bcrypt.generate_password_hash(data["password"]).decode(
@@ -126,14 +171,11 @@ def register():
         if user_collection.find_one({"email": data["email"]}):
             response["error"]="User already exists!"
             return response
-        if user_collection.find_one({"username": data["username"]}):
-            response["error"]="Username already taken!"
-            return response
 
         new_user = User(username=data["username"],email=data["email"],password=hashed_password,createdat=datetime.datetime.utcnow(),updatedat=datetime.datetime.utcnow())
         user_collection.insert_one(new_user.to_mongo())
 
-        response["results"] = {"message": "User registered successfully!"}
+        response["message"] = "Account created successfully"
         return response
     response["error"] = "Wrong request type"
     return response
@@ -141,7 +183,7 @@ def register():
 
 @app.route("/login", methods=["POST"])
 def login():
-    response = {"error": None, "results": {}}
+    response = {"error": None, "data": {}, "message":""}
 
     if request.method == "POST":
         data = request.get_json()
@@ -152,21 +194,23 @@ def login():
             if bcrypt.check_password_hash(user_data["password"], data["password"]):
                 payload = {
                     "user_id": str(user_data["_id"]),
-                    "exp": arrow.utcnow().shift(minutes=5).int_timestamp,
+                    "exp": arrow.utcnow().shift(minutes=1440).int_timestamp,
                 }
-                token = jwt.encode(payload, os.getenv("SECRET_KEY"), algorithm="HS256")
+                token = jwt.encode(payload, JWT_SECRET_KEY , algorithm="HS256")
                 token = str(token)
                 del user_data["password"]
                 user_data["_id"] = str(user_data["_id"])
 
-                response["results"] = {"user_data": user_data, "token": token}
+                response["data"] = {"user_data": user_data, "token": token}
                 return response
             else:
                 response["error"] = "Invalid credentials!"
-                return response
+                response["message"] = "Email / Password is incorrect"
+                return response, 401
         else:
             response["error"] = "User not found!"
-            return response
+            response["message"] = "No user exists with given email"
+            return response, 404
     
     response["error"] = "Method not allowed!"
     return response
