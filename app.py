@@ -12,6 +12,9 @@ import razorpay
 import hmac
 from functools import wraps
 import hashlib
+from models import User, Verification
+from flask_mail import Mail, Message
+import random, string
 
 load_dotenv()
 app = Flask(__name__)
@@ -30,8 +33,21 @@ try:
     db = client['sample_mflix']
     print("Connected to MongoDB successfully!")
 
-    # if "user" not in db.list_collection_names():
-    #     db.create_collection("user")
+    if "user" not in db.list_collection_names():
+        db.create_collection("user")
+
+    if "verification" not in db.list_collection_names():
+        db.create_collection("verification")
+
+    user_collection = db["user"]
+    verification_collection = db["verification"]
+    app.config["MAIL_SERVER"] = "smtp.gmail.com"
+    app.config["MAIL_PORT"] = 465
+    app.config["MAIL_USE_TLS"] = False
+    app.config["MAIL_USE_SSL"] = True
+    app.config["MAIL_USERNAME"] = os.getenv("GMAIL_USERNAME")
+    app.config["MAIL_PASSWORD"] = os.getenv("GMAIL_APP_PASSWORD")
+    mail = Mail(app)
     
 
 except ConnectionFailure as e:
@@ -78,6 +94,21 @@ def verify_token(func):
 
     return decorated_function
 
+
+def generate_otp():
+    otp = "".join(random.choices(string.digits, k=6))
+    print(otp)
+    return otp
+
+
+def send_otp_email(email, otp):
+    msg = Message(
+        "OTP for registration",
+        sender=os.getenv("GMAIL_USERNAME"),
+        recipients=[email],
+    )
+    msg.body = f"Your OTP for registration is {otp}"
+    mail.send(msg)
 
 
 @app.route('/', methods=['GET'])
@@ -162,9 +193,10 @@ def register():
     response["error"] = None
     response["data"] = {}
     response["message"] = ''
-    if request.method == "POST":
+
+    try: 
         data = request.get_json()
-        print(data)
+
         hashed_password = bcrypt.generate_password_hash(data["password"]).decode(
             "utf-8"
         )
@@ -180,45 +212,142 @@ def register():
 
         response["message"] = "Account created successfully"
         return response
-    else:
-        response["error"] = "Wrong request type"
+    except Exception as e:
+        response["error"] = str(e)
+        response["message"] = "Something went wrong"
     return response
 
 
 @app.route("/login", methods=["POST"])
 def login():
-    response = {"error": None, "data": {}, "message":""}
+    response = {}
+    response["error"] = None
+    response["data"] = {}
+    response["message"] = ''
 
-    if request.method == "POST":
+    try:
         data = request.get_json()
         user_collection = db["user"]
         user_data = user_collection.find_one({"email": data["email"]})
 
         if user_data:
             if bcrypt.check_password_hash(user_data["password"], data["password"]):
+                if user_data["verified"]:
+                    payload = {
+                        "user_id": str(user_data["_id"]),
+                        "exp": arrow.utcnow().shift(minutes=5).int_timestamp,
+                    }
+                    print("Payload: ",payload)
+                    token = jwt.encode(payload, JWT_SECRET_KEY, algorithm="HS256")
+                    token = str(token)
+                    del user_data["password"]
+                    user_data["_id"] = str(user_data["_id"])
+
+                    response["data"] = {"user_data": user_data, "token": token}
+                    response["message"] = "Login Successful"
+                    return response
+                else:
+                    otp = generate_otp()
+                    print("OTP: ",otp)
+                    send_otp_email(data["email"], otp)
+                    print("OTP sent successfully! Please verify OTP to complete registration.")
+                    ver = Verification(email=data["email"],otp=otp,otptype="email",generationtime=datetime.datetime.utcnow())
+                    verification_collection.update_one({"email": data["email"], "otptype": "email"}, {"$set": ver.to_mongo()}, upsert=True)
+                    user1 = user_data
+                    user1["_id"] = str(user1["_id"])
+                    del user1["password"]
+                    response["data"]={"token":None,"user_data":user1}
+                    response["message"] ="OTP sent successfully! Please verify OTP to complete registration."
+                    return response   
+            else:
+                response["error"] = "Invalid credentials"
+                response["message"] = "Invalid credentials"
+                return response, 401
+        else:
+            response["error"] = "User not found"
+            response["message"] = "No user exists with given email"
+            return response, 404
+    except Exception as e:
+        response["error"] = str(e)
+        response["message"] = "Unable to Login"
+    return response
+    
+
+@app.route("/verifyemail",methods=["POST"])
+def verifyemail():
+    response = {}
+    response["error"] = None
+    response["data"] = {}
+    response["message"] = ''
+
+    try:
+        data = request.get_json()
+        user_collection = db["user"]
+        print(data)
+        user_data = user_collection.find_one({"email": data["email"]})
+        veridata = verification_collection.find_one({"email": data["email"]})
+        print(veridata)
+        otp_entered = veridata["otp"]
+
+        if user_data:
+            if "otp" in data and str(data["otp"]) == str(otp_entered) and veridata["otptype"]=="email" and veridata["generationtime"]>datetime.datetime.utcnow()-datetime.timedelta(minutes=5):
+                del veridata["otp"]
                 payload = {
                     "user_id": str(user_data["_id"]),
                     "exp": arrow.utcnow().shift(minutes=1440).int_timestamp,
                 }
-                token = jwt.encode(payload, JWT_SECRET_KEY , algorithm="HS256")
+                token = jwt.encode(payload, JWT_SECRET_KEY, algorithm="HS256")
                 token = str(token)
+                user_collection.update_one({"email":data["email"]},{"$set":{"verified":True}})
+                user_data["verified"] = True
                 del user_data["password"]
                 user_data["_id"] = str(user_data["_id"])
-
-                response["data"] = {"user_data": user_data, "token": token}
+                response["data"] = {"user_data": user_data, "token": token}  
+                response["message"] = "OTP verified"
                 return response
             else:
-                response["error"] = "Invalid credentials!"
-                response["message"] = "Email / Password is incorrect"
+                print(otp_entered)
+                # print(user_data["otp"])
+                response["message"] = "Entered OTP is invalid"
+                response["error"] = "Entered OTP is invalid"
                 return response, 401
         else:
-            response["error"] = "User not found!"
-            response["message"] = "No user exists with given email"
+            response["message"] = "No such user found"
+            response["error"] = "User not found"
             return response, 404
-    
-    response["error"] = "Method not allowed!"
+    except Exception as e:
+        response["error"] = str(e)
+        response["message"] = "Unable to verify email"
+        return response
+
+
+@app.route("/forgetpassword",methods=["POST"])
+def forgetpassword():
+    response = {}
+    response["error"] = None
+    response["data"] = {}
+    response["message"] = ''
+
+    try:
+        data = request.get_json()
+        user_collection = db["user"]
+        user_data = user_collection.find_one({"email": data["email"]})
+
+        if user_data:
+            otp = generate_otp()
+            send_otp_email(data["email"], otp)
+            data["otp"] = otp
+            ver = Verification(email=data["email"],otp=otp,otptype="password",generationtime=datetime.datetime.utcnow())
+            verification_collection.update_one({"email": data["email"], "otptype": "password"}, {"$set": ver.to_mongo()}, upsert=True)
+            response["data"] = {"message": "OTP sent successfully! Please verify OTP to reset password."}
+            return response
+        else:
+            response["error"] = "User not found!"
+            return response
+    except Exception as e:
+        response["error"] = str(e)
+        response["message"] = "Unable to change password"
     return response
-    
 
 @app.route("/search")
 @verify_token
