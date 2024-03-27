@@ -12,9 +12,10 @@ import razorpay
 import hmac
 from functools import wraps
 import hashlib
-from models import User, Verification
+from models import User, Verification, Payments
 from flask_mail import Mail, Message
 import random, string
+from bson import ObjectId
 
 load_dotenv()
 app = Flask(__name__)
@@ -38,6 +39,9 @@ try:
 
     if "verification" not in db.list_collection_names():
         db.create_collection("verification")
+    
+    if "payments" not in db.list_collection_names():
+        db.create_collection("payments")
 
     user_collection = db["user"]
     verification_collection = db["verification"]
@@ -126,33 +130,67 @@ def hello_world(user_id):
 def create_razorpay_order(user_id):
     response = {}
     response["error"] = None
-    response["data"] = {}
-    amount = request.args['amount']
-    print(amount)
+    response["data"] = {} 
+    response["message"] = ""
     
-    rz_data = {
-        "amount": int(amount)*100,
-        "currency": "INR",
-        "receipt": "receipt#1",
-        "notes": {
-            "key1": "value3",
-            "key2": "value2"
-        }
-    }
-
     try:
+
+        amount = request.args['amount']
+        plan = request.args['plan']
+        amount_in_paise = int(amount) * 100
+
+        if plan == "pro" and amount == "299":
+            rz_data = {
+                "amount": int(amount)*100,
+                "currency": "INR",
+                "receipt": f"receipt_{user_id}",
+                "notes": {
+                    "plan ": "pro"
+                }
+            }
+        elif plan == "premium" and amount == "499":
+            rz_data = {
+                "amount": amount_in_paise,
+                "currency": "INR",
+                "receipt": f"receipt_{user_id}",
+                "notes": {
+                    "plan ": "premium"
+                }
+            }
+        else :
+            response["error"] = "Plans and amount dont match"
+            response["message"] = "please try again later"
+            return response
+
+        user_collection = db["user"]
+        user_data = user_collection.find_one({"_id":ObjectId(user_id)})
+        payments_collection = db["payments"]
+        
+        if user_data is None:
+            response["error"] = "No user exists"
+            response["message"] = "No user exists"
+
         razorpay_client = razorpay.Client(auth=(RAZORPAY_ID, RAZORPAY_KEY_SECRET))
         razorpay_response = razorpay_client.order.create(data=rz_data)
-
-        order_id = razorpay_response['id']
         order_status = razorpay_response['status']
-        response['data']['order_id'] = order_id
-        response['data']['order_status'] = order_status
-        response['data']['amount'] = int(amount) * 100
-        
-        return jsonify(response)
+
+        if order_status =="created":
+            response["message"] = "Order created"
+
+            order_id = razorpay_response['id']
+            payment = Payments(email = user_data["email"], amount = amount_in_paise, razorpay_order_id = order_id, status = "created", creation_time = datetime.datetime.utcnow(), plan = plan)
+
+            payments_collection.insert_one(payment.to_mongo())
+            response['data']['order_id'] = order_id
+            response['data']['order_status'] = order_status
+            response['data']['amount'] = int(amount)
+        else:
+            response["message"] = "Couldnt create order"
+            response["error"] = "Couldnt create order"
+        return response
     except Exception as e:
         response['error'] = str(e)
+        response["message"] = "Error creating order"
         return response
     
 
@@ -167,21 +205,41 @@ def verify_razorpay_signature(user_id):
     response["message"] = ""
     try:
         razorpay_client = razorpay.Client(auth=(RAZORPAY_ID, RAZORPAY_KEY_SECRET))
-
         request_body = request.json
 
-        payment_status = razorpay_client.utility.verify_payment_signature({
+        user_collection = db["user"]
+        payments_collection = db["payments"]
+
+        user_data = user_collection.find_one({"_id": ObjectId(user_id)})
+        if user_data is None:
+            response['error'] = "No user exists"
+            response['message'] = "No user exists"
+
+
+        verification_status = razorpay_client.utility.verify_payment_signature({
             'razorpay_order_id': request_body["razorpay_order_id"],
             'razorpay_payment_id': request_body["razorpay_payment_id"],
             'razorpay_signature': request_body["razorpay_signature"]
         })
-        if payment_status == True:
-            response['data']['payment_status'] = True
+        if verification_status == True:
+            payment_data = payments_collection.find_one({"razorpay_order_id":request_body["razorpay_order_id"]})
+            if payment_data['email'] == user_data['email'] and payment_data['status'] == 'created':
+                payment = Payments(razorpay_order_id = request_body['razorpay_order_id'], status = "verified", payment_time = datetime.datetime.utcnow())
+                payments_collection.update_one({"razorpay_order_id":request_body["razorpay_order_id"]}, {"$set": payment.to_mongo()})
+                response["message"] = "Payment Verified"
+                user_collection.update_one({"email":user_data['email']},{"$set":{"plan":payment_data['plan'], "subscription_end_date":datetime.datetime.utcnow()+datetime.timedelta(days=30)}})
+                response['data']['verification_status'] = True
+            else:
+                response["error"] = "Couldnt verify details"
+                response["message"] = "Couldnt verify details"
         else:
             response['data']['payment_status'] = False
+            response["error"] = "Couldnt verify payment details"
+            response["message"] = "Couldnt verify payment details"
         return response
     except Exception as e:
         response['error'] = str(e)
+        response["message"] = "Error verifying payment details"
         return response
 
     
@@ -235,7 +293,7 @@ def login():
                 if user_data["verified"]:
                     payload = {
                         "user_id": str(user_data["_id"]),
-                        "exp": arrow.utcnow().shift(minutes=5).int_timestamp,
+                        "exp": arrow.utcnow().shift(minutes=1440).int_timestamp,
                     }
                     print("Payload: ",payload)
                     token = jwt.encode(payload, JWT_SECRET_KEY, algorithm="HS256")
