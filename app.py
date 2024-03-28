@@ -67,7 +67,7 @@ except ConnectionFailure as e:
 @app.after_request
 def add_cors_headers(response):
     response.headers['Access-Control-Allow-Origin'] = '*'
-    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    response.headers['Access-Control-Allow-Headers'] = '*'
     return response
 
 
@@ -347,29 +347,33 @@ def verifyemail():
         user_collection = db["user"]
         print(data)
         user_data = user_collection.find_one({"email": data["email"]})
-        veridata = verification_collection.find_one({"email": data["email"]})
+        type = data["type"]
+        veridata = verification_collection.find_one({"email": data["email"], "otptype": str(type)})
         print(veridata)
         otp_entered = veridata["otp"]
 
         if user_data:
-            if "otp" in data and str(data["otp"]) == str(otp_entered) and veridata["otptype"]=="email" and veridata["generationtime"]>datetime.datetime.utcnow()-datetime.timedelta(minutes=5):
+            if "otp" in data and str(data["otp"]) == str(otp_entered) and veridata["generationtime"]>datetime.datetime.utcnow()-datetime.timedelta(minutes=5):
                 del veridata["otp"]
-                payload = {
-                    "user_id": str(user_data["_id"]),
-                    "exp": arrow.utcnow().shift(minutes=1440).int_timestamp,
-                }
-                token = jwt.encode(payload, JWT_SECRET_KEY, algorithm="HS256")
-                token = str(token)
-                user_collection.update_one({"email":data["email"]},{"$set":{"verified":True}})
-                user_data["verified"] = True
-                del user_data["password"]
-                user_data["_id"] = str(user_data["_id"])
-                response["data"] = {"user_data": user_data, "token": token}  
-                response["message"] = "OTP verified"
+                if type == "email":
+                    payload = {
+                        "user_id": str(user_data["_id"]),
+                        "exp": arrow.utcnow().shift(minutes=1440).int_timestamp,
+                    }
+                    token = jwt.encode(payload, JWT_SECRET_KEY, algorithm="HS256")
+                    token = str(token)
+                    user_collection.update_one({"email":data["email"]},{"$set":{"verified":True}})
+                    user_data["verified"] = True
+                    del user_data["password"]
+                    user_data["_id"] = str(user_data["_id"])
+                    response["data"] = {"user_data": user_data, "token": token} 
+                    response["message"] = "OTP verified"
+                else:
+                    response["message"] = "OTP verified"
                 return response
             else:
                 print(otp_entered)
-                # print(user_data["otp"])
+                print(data["otp"])
                 response["message"] = "Entered OTP is invalid"
                 response["error"] = "Entered OTP is invalid"
                 return response, 401
@@ -383,8 +387,8 @@ def verifyemail():
         return response
 
 
-@app.route("/forgetpassword",methods=["POST"])
-def forgetpassword():
+@app.route("/forgotpassword",methods=["POST"])
+def forgotpassword():
     response = {}
     response["error"] = None
     response["data"] = {}
@@ -409,6 +413,34 @@ def forgetpassword():
     except Exception as e:
         response["error"] = str(e)
         response["message"] = "Unable to change password"
+    return response
+
+@app.route("/resetpassword",methods=["POST"])
+def resetpassword():
+
+    response = {}
+    response["error"] = None
+    response["data"] = {}
+    response["message"] = ''
+    try:
+        if request.method == "POST":
+            data = request.get_json()
+            user_collection = db["user"]
+            user_data = user_collection.find_one({"email": data["email"]})
+            newpassword = bcrypt.generate_password_hash(data["password"]).decode("utf-8")
+            if user_data:
+                user_collection.update_one({"email": data["email"]}, {"$set": {"password": newpassword}})
+                response["message"] = "Password reset successfully"
+                return response
+            else:
+                response["error"] = "User not found!"
+                return response
+        else:
+            response["error"] = "Invalid request"
+            return response
+    except Exception as e:
+        response["error"] = str(e)
+        response["message"] = "Unable to reset password"
     return response
 
 @app.route("/search", methods=["GET"])
@@ -436,7 +468,7 @@ def search_movies(user_id):
                     }
                 },
             {
-                '$limit': 10
+                '$limit': 10000
             },
             {
                 '$project': {
@@ -519,5 +551,5 @@ def get_movies_home(user_id):
 
 
 if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=8080)
+    app.run(host='0.0.0.0', port=8080,debug=True)
 
