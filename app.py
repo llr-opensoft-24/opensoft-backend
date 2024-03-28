@@ -1,4 +1,4 @@
-from flask import Flask,  jsonify, request
+from flask import Flask,  jsonify, request, Response
 import os
 from dotenv import load_dotenv
 from pymongo import MongoClient, DESCENDING
@@ -67,8 +67,82 @@ except ConnectionFailure as e:
 @app.after_request
 def add_cors_headers(response):
     response.headers['Access-Control-Allow-Origin'] = '*'
-    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    response.headers['Access-Control-Allow-Headers'] = '*'
     return response
+
+
+@app.route('/init-video', methods=["POST"])
+def init_video():
+
+    # bucket = grid_fs.put()
+    # GridFSBucket(db,"yyy").upload_from_stream(source='IMG_1468.mp4', filename='second_video.mp4')
+    # with open('IMG_1468.mp4', 'rb') as file:
+    #     file_id = grid_fs.put(file, filename='first_video.mp4')
+    # print("File stored with ID:", file_id)
+
+
+    # videoUploadStream = fs.upload_from_stream(filename='bigbuck.mp4', source='/bigbuck.mp4')
+    # with open('./bigbuck.mp4', 'rb') as videoFile:
+    #     videoUploadStream.write(videoFile.read(),)
+
+    grid_bucket = GridFSBucket(db, "video_files")
+    grid_fs.find()
+    file_id = ""
+
+    with open('bigbuck.mp4', 'rb') as file:
+        file_id = grid_bucket.upload_from_stream('testing.mp4', file)
+
+    print(type(file_id))
+    # grid_bucket.open_upload_stream()
+    # stream = grid_bucket.open_download_stream(file_id=file_id)
+    # return stream.readchunk()
+    return {}, 200
+    
+    # with grid_bucket.open_upload_stream("testing.mp4",chunk_size_bytes=5,metadata={"contentType": "video/mp4"}) as grid_in:
+    #     grid_in.write("/bigbuck.mp4")
+    return "Done..."
+
+@app.route("/mongo-video", methods=["GET"])
+def mongo_video():
+
+
+    range_header = request.headers.get('Range')
+    if not range_header:
+        return "Requires Range header", 400
+
+    filename = request.args['filename']
+    # print(request.headers)
+    print(filename)
+
+
+
+    file  = db['video_files.files'].find_one({"filename":filename})
+    if file is None:
+        return "no video found", 404
+
+
+    video_size = file['length']
+    start = range_header.split("=")[1].split("-")[0]
+    start = int(start)
+    
+
+    # end = int(end)
+    end = min(start + 1024000, video_size-1)
+    content_length = int(end) - int(start) + 1
+
+    headers = {
+        "Content-Range": f"bytes {start}-{end}/{video_size}",
+        "Accept-Ranges": "bytes",
+        "Content-Length": content_length,
+        "Content-Type": "video/mp4",
+    }
+
+    grid_out = grid_fs_bucket.open_download_stream_by_name(filename=filename)
+    grid_fs_seek = grid_out.seek(int(start), 0)
+
+
+    return Response(grid_out, status=206, headers=headers, mimetype='video/mp4')
+
 
 
 def verify_token(func):
