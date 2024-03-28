@@ -1,7 +1,7 @@
 from flask import Flask,  jsonify, request
 import os
 from dotenv import load_dotenv
-from pymongo import MongoClient
+from pymongo import MongoClient, DESCENDING
 from pymongo.errors import ConnectionFailure
 from flask_bcrypt import Bcrypt
 from models import User
@@ -16,6 +16,8 @@ from models import User, Verification, Payments
 from flask_mail import Mail, Message
 import random, string
 from bson import ObjectId
+from gridfs import GridFS, GridFSBucket
+
 
 load_dotenv()
 app = Flask(__name__)
@@ -32,6 +34,8 @@ AUTO_COMPLETE_INDEX_NAME = os.getenv("AUTO_COMPLETE_INDEX_NAME")
 try:
     client = MongoClient(DB_URI)
     db = client['sample_mflix']
+    grid_fs = GridFS(db, collection="video_files")
+    grid_fs_bucket = GridFSBucket(db, bucket_name="video_files")
     print("Connected to MongoDB successfully!")
 
     if "user" not in db.list_collection_names():
@@ -439,7 +443,7 @@ def resetpassword():
         response["message"] = "Unable to reset password"
     return response
 
-@app.route("/search")
+@app.route("/search", methods=["GET"])
 @verify_token
 def search_movies(user_id):
     response = {}
@@ -492,9 +496,10 @@ def search_movies(user_id):
                 }
             }
         ]
-        query_db_result = client[DB_NAME][MOVIES_COLLECTION_NAME].aggregate(pipeline)
+        query_db_result = db[MOVIES_COLLECTION_NAME].aggregate(pipeline)
         movies_data = []
         for movie in query_db_result:
+            print(movie)
             print(movie['title'])
             movies_data.append(movie)
         response["data"]= movies_data
@@ -503,6 +508,47 @@ def search_movies(user_id):
         response["message"] = "Search is not working"
         return response
     return response
+
+
+@app.route('/movies', methods=["GET"])
+@verify_token
+def get_movies_home(user_id):
+    response = {}
+    response["error"] = None
+    response["data"] = {}
+    response["message"] = ''
+    try:
+        movies_collection = db[MOVIES_COLLECTION_NAME]
+        movies_data = []
+        comedy_movies = movies_collection.find({"genres.0":"Comedy", "imdb.rating": {"$ne": ''}}).sort('imdb.rating', DESCENDING).limit(10)
+        action_movies = movies_collection.find({"genres.0":"Action", "imdb.rating": {"$ne": ''}}).sort('imdb.rating', DESCENDING).limit(10)
+        drama_movies = movies_collection.find({"genres.0":"Drama", "imdb.rating": {"$ne": ''}}).sort('imdb.rating', DESCENDING).limit(10)
+
+
+        for document in comedy_movies:
+            for key, value in document.items():
+                if isinstance(value, ObjectId):
+                    document[key] = str(value)
+            movies_data.append(document)
+        for document in action_movies:
+            for key, value in document.items():
+                if isinstance(value, ObjectId):
+                    document[key] = str(value)
+            movies_data.append(document)
+        for document in drama_movies:
+            for key, value in document.items():
+                if isinstance(value, ObjectId):
+                    document[key] = str(value)
+            movies_data.append(document)
+        
+        response["data"] = movies_data
+    except Exception as e:
+        response["error"] = str(e)
+        response["message"] = "Functionality is not working"
+        return response
+    return response
+
+
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=8080,debug=True)
