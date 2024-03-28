@@ -63,7 +63,7 @@ except ConnectionFailure as e:
 @app.after_request
 def add_cors_headers(response):
     response.headers['Access-Control-Allow-Origin'] = '*'
-    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    response.headers['Access-Control-Allow-Headers'] = '*'
     return response
 
 
@@ -343,7 +343,8 @@ def verifyemail():
         user_collection = db["user"]
         print(data)
         user_data = user_collection.find_one({"email": data["email"]})
-        veridata = verification_collection.find_one({"email": data["email"]})
+        type = data["type"]
+        veridata = verification_collection.find_one({"email": data["email"], "otptype": str(type)})
         print(veridata)
         otp_entered = veridata["otp"]
 
@@ -407,6 +408,7 @@ def forgetpassword():
         response["message"] = "Unable to change password"
     return response
 
+
 @app.route("/search")
 @verify_token
 def search_movies(user_id):
@@ -432,7 +434,7 @@ def search_movies(user_id):
                     }
                 },
             {
-                '$limit': 10
+                '$limit': 10000
             },
             {
                 '$project': {
@@ -473,5 +475,5 @@ def search_movies(user_id):
     return response
 
 if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=8080)
+    app.run(host='0.0.0.0', port=8080,debug=True)
 
