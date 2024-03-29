@@ -173,7 +173,7 @@ def create_razorpay_order(user_id):
         if user_data is None:
             response["error"] = "No user exists"
             response["message"] = "No user exists"
-
+        print(RAZORPAY_ID, RAZORPAY_KEY_SECRET)
         razorpay_client = razorpay.Client(auth=(RAZORPAY_ID, RAZORPAY_KEY_SECRET))
         razorpay_response = razorpay_client.order.create(data=rz_data)
         order_status = razorpay_response['status']
@@ -182,7 +182,7 @@ def create_razorpay_order(user_id):
             response["message"] = "Order created"
 
             order_id = razorpay_response['id']
-            payment = Payments(email = user_data["email"], amount = amount_in_paise, razorpay_order_id = order_id, status = "created", creation_time = datetime.datetime.utcnow(), plan = plan)
+            payment = Payments(email = user_data["email"], amount = amount_in_paise, razorpay_order_id = order_id, status = "created", creation_time = (int)(datetime.datetime.utcnow().timestamp()), plan = plan)
 
             payments_collection.insert_one(payment.to_mongo())
             response['data']['order_id'] = order_id
@@ -194,6 +194,7 @@ def create_razorpay_order(user_id):
         return response
     except Exception as e:
         response['error'] = str(e)
+        response["time"] = (int)(datetime.datetime.utcnow().timestamp())
         response["message"] = "Error creating order"
         return response
     
@@ -228,10 +229,10 @@ def verify_razorpay_signature(user_id):
         if verification_status == True:
             payment_data = payments_collection.find_one({"razorpay_order_id":request_body["razorpay_order_id"]})
             if payment_data['email'] == user_data['email'] and payment_data['status'] == 'created':
-                payment = Payments(razorpay_order_id = request_body['razorpay_order_id'], status = "verified", payment_time = datetime.datetime.utcnow())
+                payment = Payments(razorpay_order_id = request_body['razorpay_order_id'], status = "verified", payment_time = (int)(datetime.datetime.utcnow().timestamp()))
                 payments_collection.update_one({"razorpay_order_id":request_body["razorpay_order_id"]}, {"$set": payment.to_mongo()})
                 response["message"] = "Payment Verified"
-                user_collection.update_one({"email":user_data['email']},{"$set":{"plan":payment_data['plan'], "subscription_end_date":datetime.datetime.utcnow()+datetime.timedelta(days=30)}})
+                user_collection.update_one({"email":user_data['email']},{"$set":{"plan":payment_data['plan'], "subscription_end_date":(int)(datetime.datetime.utcnow().timestamp())+datetime.timedelta(days=30).total_seconds()}})
                 response['data']['verification_status'] = True
             else:
                 response["error"] = "Couldnt verify details"
@@ -269,7 +270,7 @@ def register():
             response["message"] = "User already exists!"
             return response
 
-        new_user = User(username=data["username"],email=data["email"],password=hashed_password,createdat=datetime.datetime.utcnow(),updatedat=datetime.datetime.utcnow())
+        new_user = User(username=data["username"],email=data["email"],password=hashed_password,createdat=(int)(datetime.datetime.utcnow().timestamp()),updatedat=(int)(datetime.datetime.utcnow().timestamp()))
         user_collection.insert_one(new_user.to_mongo())
 
         response["message"] = "Account created successfully"
@@ -313,8 +314,13 @@ def login():
                     print("OTP: ",otp)
                     send_otp_email(data["email"], otp)
                     print("OTP sent successfully! Please verify OTP to complete registration.")
-                    ver = Verification(email=data["email"],otp=otp,otptype="email",generationtime=datetime.datetime.utcnow())
-                    verification_collection.update_one({"email": data["email"], "otptype": "email"}, {"$set": ver.to_mongo()}, upsert=True)
+                    ver = Verification(email=data["email"], otp=otp, otptype="email", generationtime=int(datetime.datetime.utcnow().timestamp()))
+                    # Update operation with explicit generationtime field
+                    verification_collection.update_one(
+                        {"email": data["email"], "otptype": "email"},
+                        {"$set": {"otp": otp, "generationtime": ver.generationtime}},
+                        upsert=True
+                    )
                     user1 = user_data
                     user1["_id"] = str(user1["_id"])
                     del user1["password"]
@@ -353,7 +359,11 @@ def verifyemail():
         otp_entered = veridata["otp"]
 
         if user_data:
-            if "otp" in data and str(data["otp"]) == str(otp_entered) and veridata["generationtime"]>datetime.datetime.utcnow()-datetime.timedelta(minutes=5):
+            print("User found")
+            print(veridata["generationtime"])
+            print((int)(datetime.datetime.utcnow().timestamp())-datetime.timedelta(minutes=5).total_seconds())
+            if "otp" in data and str(data["otp"]) == str(otp_entered) and veridata["generationtime"]>(int)(datetime.datetime.utcnow().timestamp())-datetime.timedelta(minutes=5).total_seconds():
+                print("OTP verified")
                 del veridata["otp"]
                 if type == "email":
                     payload = {
@@ -403,7 +413,7 @@ def forgotpassword():
             otp = generate_otp()
             send_otp_email(data["email"], otp)
             data["otp"] = otp
-            ver = Verification(email=data["email"],otp=otp,otptype="password",generationtime=datetime.datetime.utcnow())
+            ver = Verification(email=data["email"],otp=otp,otptype="password",generationtime=(int)(datetime.datetime.utcnow().timestamp()))
             verification_collection.update_one({"email": data["email"], "otptype": "password"}, {"$set": ver.to_mongo()}, upsert=True)
             response["data"] = {"message": "OTP sent successfully! Please verify OTP to reset password."}
             return response
@@ -429,7 +439,7 @@ def resetpassword():
             user_data = user_collection.find_one({"email": data["email"]})
             newpassword = bcrypt.generate_password_hash(data["password"]).decode("utf-8")
             if user_data:
-                user_collection.update_one({"email": data["email"]}, {"$set": {"password": newpassword}})
+                user_collection.update_one({"email": data["email"]}, {"$set": {"password": newpassword,"updatedat": (int)(datetime.datetime.utcnow().timestamp())}})
                 response["message"] = "Password reset successfully"
                 return response
             else:
