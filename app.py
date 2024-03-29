@@ -18,6 +18,10 @@ import random, string
 from bson import ObjectId
 from gridfs import GridFS, GridFSBucket
 
+from openai import OpenAI
+
+
+
 
 load_dotenv()
 app = Flask(__name__)
@@ -30,6 +34,9 @@ JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 DB_NAME = os.getenv("DB_NAME")
 MOVIES_COLLECTION_NAME = os.getenv("MOVIES_COLLECTION_NAME")
 AUTO_COMPLETE_INDEX_NAME = os.getenv("AUTO_COMPLETE_INDEX_NAME")
+
+VECTOR_SEARCH_INDEX_NAME = os.getenv("VECTOR_SEARCH_INDEX_NAME")
+OPEN_AI_KEY = os.getenv("OPEN_AI_KEY")
 
 try:
     client = MongoClient(DB_URI)
@@ -61,7 +68,9 @@ try:
 except ConnectionFailure as e:
     print("Could not connect to MongoDB: %s" % e)
 
-
+client2 = OpenAI(api_key="OPEN_AI_KEY")
+def get_embedding(text, model="text-embedding-ada-002"):
+  return client2.embeddings.create(input = [text], model=model).data[0].embedding
 
 
 @app.after_request
@@ -69,8 +78,6 @@ def add_cors_headers(response):
     response.headers['Access-Control-Allow-Origin'] = '*'
     response.headers['Access-Control-Allow-Headers'] = '*'
     return response
-
-
 
 def verify_token(func):
     @wraps(func)
@@ -452,58 +459,98 @@ def search_movies(user_id):
     response["data"] = {}
     response["message"] = ''
     try:
-        query = request.args.get("q")
-        pipeline =[
+        collection1 = db['movies']
+        collection2 = db['embedded_movies']
+        query = request.args.get('q')
+        query_vector = get_embedding(query)
+    
+        db_result = collection1.aggregate([
             {
                 '$search': {
                     'index': AUTO_COMPLETE_INDEX_NAME,
-                    'autocomplete': {
-                                'query': query, 
-                                'path': 'title',
-                                'tokenOrder': 'any',
-                                'fuzzy': {
-                                    'maxEdits': 2,
-                                    'prefixLength': 3
+                    'compound': {
+                        'should': [
+                            {
+                                'autocomplete': {
+                                    'query': query, 
+                                    'path': 'title',
+                                    'tokenOrder': 'sequential',
+                                    'fuzzy': {
+                                        'maxEdits': 1, 
+                                        'prefixLength': 2
+                                    }
                                 }
                             }
+                        ], 
+                        'minimumShouldMatch': 1
                     }
-                },
+                }
+            }, 
             {
-                '$limit': 10000
-            },
+                '$limit': 200
+            }, 
             {
                 '$project': {
-                    '_id': 0, 
-                    'title': 1, 
-                    'plot': 1, 
-                    'cast': 1,
-                    'genres': 1,
-                    'runtime': 1,
-                    'rated': 1,
-                    'cast': 1,
-                    'poster': 1,
-                    'fullplot': 1,
-                    'languages': 1,
-                    'released': 1,
-                    'directors': 1,
-                    'writer' : 1,
-                    'awards': 1,
-                    'year': 1,
-                    'imdb': 1,
-                    'countries': 1,
-                    'type': 1,
-                    'lastupdated': 1,
-                    'score' : {"$meta": "searchScore"}
+                    '_id': 0, 'title': 1, 'plot': 1,
+                    'tomatoes.viewer.numReviews': 1,
+                    'score': {
+                        '$meta': 'searchScore'
+                    }
                 }
             }
-        ]
-        query_db_result = db[MOVIES_COLLECTION_NAME].aggregate(pipeline)
-        movies_data = []
-        for movie in query_db_result:
-            print(movie)
-            print(movie['title'])
-            movies_data.append(movie)
-        response["data"]= movies_data
+        ])
+        
+        vector_result = collection2.aggregate([
+          {
+            '$vectorSearch': {
+              'index': VECTOR_SEARCH_INDEX_NAME, 
+              'path': 'plot_embedding', 
+              'queryVector': query_vector,
+              'numCandidates': 150, 
+              'limit': 20
+            }
+          },
+          {
+            '$project': {
+                    '_id': 0, 'title': 1, 'plot': 1,
+                    'tomatoes.viewer.numReviews': 1,
+                    'score': {
+                        '$meta': 'vectorSearchScore'
+                    }
+                }
+            }
+          
+        ])
+        db_result = list(db_result)
+        vector_result = list(vector_result)
+        combined_list = vector_result + db_result
+        def num_reviews_key(movie):
+            if "tomatoes" in movie and movie["tomatoes"] is not None and "viewer" in movie["tomatoes"] and movie["tomatoes"]["viewer"] is not None and "numReviews" in movie["tomatoes"]["viewer"] and movie["tomatoes"]["viewer"]["numReviews"] is not None:
+                x = int(movie["tomatoes"]["viewer"]["numReviews"])
+            else:
+                x = 0
+            return x
+        combined_list.sort(key=num_reviews_key)
+        titles_added = []
+        results_titles = []
+        combined_list.reverse()
+        for movie in combined_list:
+            if movie['title'] not in titles_added: 
+                titles_added.append(movie['title'])
+                results_titles.append({"title":movie['title'],"score":movie["score"],"plot":movie["plot"]})
+            if(len(results_titles) == 10):
+                break
+        results_titles = sorted(results_titles, key=lambda x: x['score'])
+        results_titles.reverse()
+    
+        for i in results_titles:
+            print(i["title"]," ",i["score"])
+        results = []
+        projection =  {"plot_embedding": 0, "tomatoes": 0, "_id":0}
+        for movie in results_titles:
+            results.append(collection1.find_one({"title": movie["title"]},projection))
+       response["data"]= results
+
     except Exception as e:
         response["error"] = str(e)
         response["message"] = "Search is not working"
