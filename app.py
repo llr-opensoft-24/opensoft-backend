@@ -568,7 +568,7 @@ def search_movies(user_id):
         projection =  {"plot_embedding": 0, "tomatoes": 0, "_id":0}
         for movie in results_titles:
             results.append(collection1.find_one({"title": movie["title"]},projection))
-       response["data"]= results
+        response["data"]= results
 
     except Exception as e:
         response["error"] = str(e)
