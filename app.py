@@ -71,7 +71,7 @@ try:
 except ConnectionFailure as e:
     print("Could not connect to MongoDB: %s" % e)
 
-client2 = OpenAI(api_key="OPEN_AI_KEY")
+client2 = OpenAI(api_key=OPEN_AI_KEY)
 def get_embedding(text, model="text-embedding-ada-002"):
   return client2.embeddings.create(input = [text], model=model).data[0].embedding
 
