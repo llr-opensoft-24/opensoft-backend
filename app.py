@@ -1,4 +1,4 @@
-from flask import Flask,  jsonify, request
+from flask import Flask,  jsonify, request, Response
 import os
 from dotenv import load_dotenv
 from pymongo import MongoClient, DESCENDING
@@ -69,6 +69,7 @@ def add_cors_headers(response):
     response.headers['Access-Control-Allow-Origin'] = '*'
     response.headers['Access-Control-Allow-Headers'] = '*'
     return response
+
 
 
 def verify_token(func):
@@ -520,9 +521,9 @@ def get_movies_home(user_id):
     try:
         movies_collection = db[MOVIES_COLLECTION_NAME]
         movies_data = []
-        comedy_movies = movies_collection.find({"genres.0":"Comedy", "imdb.rating": {"$ne": ''}}).sort('imdb.rating', DESCENDING).limit(10)
-        action_movies = movies_collection.find({"genres.0":"Action", "imdb.rating": {"$ne": ''}}).sort('imdb.rating', DESCENDING).limit(10)
-        drama_movies = movies_collection.find({"genres.0":"Drama", "imdb.rating": {"$ne": ''}}).sort('imdb.rating', DESCENDING).limit(10)
+        comedy_movies = movies_collection.find({"genres.0":"Comedy", "imdb.rating": {"$ne": ''},"poster": {"$exists": True}}).sort('imdb.rating', DESCENDING).limit(20)
+        action_movies = movies_collection.find({"genres.0":"Action", "imdb.rating": {"$ne": ''},"poster": {"$exists": True}}).sort('imdb.rating', DESCENDING).limit(20)
+        drama_movies = movies_collection.find({"genres.0":"Drama", "imdb.rating": {"$ne": ''},"poster": {"$exists": True}}).sort('imdb.rating', DESCENDING).limit(20)
 
 
         for document in comedy_movies:
@@ -548,6 +549,79 @@ def get_movies_home(user_id):
         return response
     return response
 
+
+@app.route("/video", methods=["GET"])
+def mongo_video():
+    try:
+        auth_token = request.args['token']
+        filename = request.args['filename']
+        print(auth_token)
+        if auth_token is None:
+            print("hiii")
+            return Response("", status=401)
+        if filename is None:
+            return Response("Requires filename param", status = 400)
+        
+
+        decoded_token = jwt.decode(auth_token, verify=True, key=JWT_SECRET_KEY, algorithms=["HS256"])
+        user_id = decoded_token['user_id']
+
+        user_collection = db['user']
+        user_data = user_collection.find_one({"_id":ObjectId(user_id)})
+
+
+        user_plan = user_data['plan']
+        print(filename)
+        requested_video_plan = filename.split("_")[0]
+        requested_resolution = filename.split('_')[1].split('.')[0]
+        permission_allowed = False
+
+
+        if user_plan == 'free' and requested_video_plan == 'free' and (requested_resolution in ['480p', '720p']):
+            permission_allowed = True
+        if user_plan == 'pro' and requested_video_plan in ['free', 'pro'] and (requested_resolution in ['480p', '720p', '1080p']):
+            permission_allowed = True
+        if user_plan == 'premium':
+            permission_allowed = True
+
+        
+        if permission_allowed == False:
+            return Response("Doesn't have access to requested content", 400)
+
+
+        range_header = request.headers.get('Range')
+        if not range_header:
+            return Response("Requires Range header", status=400)
+
+
+
+
+        file  = db['video_files.files'].find_one({"filename":filename})
+        if file is None:
+            return "no video found", 404
+
+        video_size = file['length']
+        start = range_header.split("=")[1].split("-")[0]
+        start = int(start)
+        
+
+        end = video_size -1
+        content_length = int(end) - int(start) + 1
+
+        headers = {
+            "Content-Range": f"bytes {start}-{end}/{video_size}",
+            "Accept-Ranges": "bytes",
+            "Content-Length": content_length,
+            "Content-Type": "video/mp4",
+        }
+
+        grid_out = grid_fs_bucket.open_download_stream_by_name(filename=filename)
+        grid_fs_seek = grid_out.seek(int(start), 0)
+
+
+        return Response(grid_out, status=206, headers=headers, mimetype='video/mp4')
+    except Exception as e:
+        return Response("Something went wrong", status=404)
 
 
 if __name__ == "__main__":
