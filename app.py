@@ -1,4 +1,4 @@
-from flask import Flask,  jsonify, request
+from flask import Flask,  jsonify, request, Response
 import os
 from dotenv import load_dotenv
 from pymongo import MongoClient, DESCENDING
@@ -18,12 +18,17 @@ import random, string
 from bson import ObjectId
 from gridfs import GridFS, GridFSBucket
 
+from openai import OpenAI
+
+
+
 
 load_dotenv()
 app = Flask(__name__)
 bcrypt = Bcrypt(app)
 
 DB_URI = os.getenv('DB_URI')
+VIDEOS_DB_URI = os.getenv('VIDEOS_DB_URI')
 RAZORPAY_ID = os.getenv('RAZORPAY_ID')
 RAZORPAY_KEY_SECRET = os.getenv('RAZORPAY_KEY_SECRET')
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
@@ -31,11 +36,16 @@ DB_NAME = os.getenv("DB_NAME")
 MOVIES_COLLECTION_NAME = os.getenv("MOVIES_COLLECTION_NAME")
 AUTO_COMPLETE_INDEX_NAME = os.getenv("AUTO_COMPLETE_INDEX_NAME")
 
+VECTOR_SEARCH_INDEX_NAME = os.getenv("VECTOR_SEARCH_INDEX_NAME")
+OPEN_AI_KEY = os.getenv("OPEN_AI_KEY")
+
 try:
     client = MongoClient(DB_URI)
+    videos_client = MongoClient(VIDEOS_DB_URI)
     db = client['sample_mflix']
-    grid_fs = GridFS(db, collection="video_files")
-    grid_fs_bucket = GridFSBucket(db, bucket_name="video_files")
+    videos_db = videos_client['sample_mflix']
+    # grid_fs = GridFS(videos_db, collection="video_files")
+    grid_fs_bucket = GridFSBucket(videos_db, bucket_name="video_files")
     print("Connected to MongoDB successfully!")
 
     if "user" not in db.list_collection_names():
@@ -61,7 +71,9 @@ try:
 except ConnectionFailure as e:
     print("Could not connect to MongoDB: %s" % e)
 
-
+client2 = OpenAI(api_key="OPEN_AI_KEY")
+def get_embedding(text, model="text-embedding-ada-002"):
+  return client2.embeddings.create(input = [text], model=model).data[0].embedding
 
 
 @app.after_request
@@ -69,7 +81,6 @@ def add_cors_headers(response):
     response.headers['Access-Control-Allow-Origin'] = '*'
     response.headers['Access-Control-Allow-Headers'] = '*'
     return response
-
 
 def verify_token(func):
     @wraps(func)
@@ -173,6 +184,12 @@ def create_razorpay_order(user_id):
         if user_data is None:
             response["error"] = "No user exists"
             response["message"] = "No user exists"
+            return response
+        if user_data['plan'] != 'free' or user_data['subscription_end_date'] > datetime.datetime.utcnow():
+            response['error'] = "Subscription Already active"
+            response['message'] = "Subscription Already active"
+            return response
+
         print(RAZORPAY_ID, RAZORPAY_KEY_SECRET)
         razorpay_client = razorpay.Client(auth=(RAZORPAY_ID, RAZORPAY_KEY_SECRET))
         razorpay_response = razorpay_client.order.create(data=rz_data)
@@ -461,58 +478,98 @@ def search_movies(user_id):
     response["data"] = {}
     response["message"] = ''
     try:
-        query = request.args.get("q")
-        pipeline =[
+        collection1 = db['movies']
+        collection2 = db['embedded_movies']
+        query = request.args.get('q')
+        query_vector = get_embedding(query)
+    
+        db_result = collection1.aggregate([
             {
                 '$search': {
                     'index': AUTO_COMPLETE_INDEX_NAME,
-                    'autocomplete': {
-                                'query': query, 
-                                'path': 'title',
-                                'tokenOrder': 'any',
-                                'fuzzy': {
-                                    'maxEdits': 2,
-                                    'prefixLength': 3
+                    'compound': {
+                        'should': [
+                            {
+                                'autocomplete': {
+                                    'query': query, 
+                                    'path': 'title',
+                                    'tokenOrder': 'sequential',
+                                    'fuzzy': {
+                                        'maxEdits': 1, 
+                                        'prefixLength': 2
+                                    }
                                 }
                             }
+                        ], 
+                        'minimumShouldMatch': 1
                     }
-                },
+                }
+            }, 
             {
-                '$limit': 10000
-            },
+                '$limit': 200
+            }, 
             {
                 '$project': {
-                    '_id': 0, 
-                    'title': 1, 
-                    'plot': 1, 
-                    'cast': 1,
-                    'genres': 1,
-                    'runtime': 1,
-                    'rated': 1,
-                    'cast': 1,
-                    'poster': 1,
-                    'fullplot': 1,
-                    'languages': 1,
-                    'released': 1,
-                    'directors': 1,
-                    'writer' : 1,
-                    'awards': 1,
-                    'year': 1,
-                    'imdb': 1,
-                    'countries': 1,
-                    'type': 1,
-                    'lastupdated': 1,
-                    'score' : {"$meta": "searchScore"}
+                    '_id': 0, 'title': 1, 'plot': 1,
+                    'tomatoes.viewer.numReviews': 1,
+                    'score': {
+                        '$meta': 'searchScore'
+                    }
                 }
             }
-        ]
-        query_db_result = db[MOVIES_COLLECTION_NAME].aggregate(pipeline)
-        movies_data = []
-        for movie in query_db_result:
-            print(movie)
-            print(movie['title'])
-            movies_data.append(movie)
-        response["data"]= movies_data
+        ])
+        
+        vector_result = collection2.aggregate([
+          {
+            '$vectorSearch': {
+              'index': VECTOR_SEARCH_INDEX_NAME, 
+              'path': 'plot_embedding', 
+              'queryVector': query_vector,
+              'numCandidates': 150, 
+              'limit': 20
+            }
+          },
+          {
+            '$project': {
+                    '_id': 0, 'title': 1, 'plot': 1,
+                    'tomatoes.viewer.numReviews': 1,
+                    'score': {
+                        '$meta': 'vectorSearchScore'
+                    }
+                }
+            }
+          
+        ])
+        db_result = list(db_result)
+        vector_result = list(vector_result)
+        combined_list = vector_result + db_result
+        def num_reviews_key(movie):
+            if "tomatoes" in movie and movie["tomatoes"] is not None and "viewer" in movie["tomatoes"] and movie["tomatoes"]["viewer"] is not None and "numReviews" in movie["tomatoes"]["viewer"] and movie["tomatoes"]["viewer"]["numReviews"] is not None:
+                x = int(movie["tomatoes"]["viewer"]["numReviews"])
+            else:
+                x = 0
+            return x
+        combined_list.sort(key=num_reviews_key)
+        titles_added = []
+        results_titles = []
+        combined_list.reverse()
+        for movie in combined_list:
+            if movie['title'] not in titles_added: 
+                titles_added.append(movie['title'])
+                results_titles.append({"title":movie['title'],"score":movie["score"],"plot":movie["plot"]})
+            if(len(results_titles) == 10):
+                break
+        results_titles = sorted(results_titles, key=lambda x: x['score'])
+        results_titles.reverse()
+    
+        for i in results_titles:
+            print(i["title"]," ",i["score"])
+        results = []
+        projection =  {"plot_embedding": 0, "tomatoes": 0, "_id":0}
+        for movie in results_titles:
+            results.append(collection1.find_one({"title": movie["title"]},projection))
+       response["data"]= results
+
     except Exception as e:
         response["error"] = str(e)
         response["message"] = "Search is not working"
@@ -530,9 +587,9 @@ def get_movies_home(user_id):
     try:
         movies_collection = db[MOVIES_COLLECTION_NAME]
         movies_data = []
-        comedy_movies = movies_collection.find({"genres.0":"Comedy", "imdb.rating": {"$ne": ''}}).sort('imdb.rating', DESCENDING).limit(10)
-        action_movies = movies_collection.find({"genres.0":"Action", "imdb.rating": {"$ne": ''}}).sort('imdb.rating', DESCENDING).limit(10)
-        drama_movies = movies_collection.find({"genres.0":"Drama", "imdb.rating": {"$ne": ''}}).sort('imdb.rating', DESCENDING).limit(10)
+        comedy_movies = movies_collection.find({"genres.0":"Comedy", "imdb.rating": {"$ne": ''},"poster": {"$exists": True}}).sort('imdb.rating', DESCENDING).limit(20)
+        action_movies = movies_collection.find({"genres.0":"Action", "imdb.rating": {"$ne": ''},"poster": {"$exists": True}}).sort('imdb.rating', DESCENDING).limit(20)
+        drama_movies = movies_collection.find({"genres.0":"Drama", "imdb.rating": {"$ne": ''},"poster": {"$exists": True}}).sort('imdb.rating', DESCENDING).limit(20)
 
 
         for document in comedy_movies:
@@ -558,6 +615,79 @@ def get_movies_home(user_id):
         return response
     return response
 
+
+@app.route("/video", methods=["GET"])
+def mongo_video():
+    try:
+        auth_token = request.args['token']
+        filename = request.args['filename']
+        print(auth_token)
+        if auth_token is None:
+            print("hiii")
+            return Response("", status=401)
+        if filename is None:
+            return Response("Requires filename param", status = 400)
+        
+
+        decoded_token = jwt.decode(auth_token, verify=True, key=JWT_SECRET_KEY, algorithms=["HS256"])
+        user_id = decoded_token['user_id']
+
+        user_collection = db['user']
+        user_data = user_collection.find_one({"_id":ObjectId(user_id)})
+
+
+        user_plan = user_data['plan']
+        print(filename)
+        requested_video_plan = filename.split("_")[0]
+        requested_resolution = filename.split('_')[1].split('.')[0]
+        permission_allowed = False
+
+
+        if user_plan == 'free' and requested_video_plan == 'free' and (requested_resolution in ['480p', '720p']):
+            permission_allowed = True
+        if user_plan == 'pro' and requested_video_plan in ['free', 'pro'] and (requested_resolution in ['480p', '720p', '1080p']):
+            permission_allowed = True
+        if user_plan == 'premium':
+            permission_allowed = True
+
+        
+        if permission_allowed == False:
+            return Response("Doesn't have access to requested content", 401)
+
+        filename = request.args['filename']
+        range_header = request.headers.get('Range')
+        if not range_header:
+            return Response("Requires Range header", status=400)
+
+
+
+
+        file  = videos_db['video_files.files'].find_one({"filename":filename})
+        if file is None:
+            return "no video found", 404
+
+        video_size = file['length']
+        start = range_header.split("=")[1].split("-")[0]
+        start = int(start)
+        
+
+        end = video_size -1
+        content_length = int(end) - int(start) + 1
+
+        headers = {
+            "Content-Range": f"bytes {start}-{end}/{video_size}",
+            "Accept-Ranges": "bytes",
+            "Content-Length": content_length,
+            "Content-Type": "video/mp4",
+        }
+
+        grid_out = grid_fs_bucket.open_download_stream_by_name(filename=filename)
+        grid_fs_seek = grid_out.seek(int(start), 0)
+
+
+        return Response(grid_out, status=206, headers=headers, mimetype='video/mp4')
+    except Exception as e:
+        return Response("Something went wrong", status=404)
 
 
 if __name__ == "__main__":
