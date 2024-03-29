@@ -24,6 +24,7 @@ app = Flask(__name__)
 bcrypt = Bcrypt(app)
 
 DB_URI = os.getenv('DB_URI')
+VIDEOS_DB_URI = os.getenv('VIDEOS_DB_URI')
 RAZORPAY_ID = os.getenv('RAZORPAY_ID')
 RAZORPAY_KEY_SECRET = os.getenv('RAZORPAY_KEY_SECRET')
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
@@ -33,9 +34,11 @@ AUTO_COMPLETE_INDEX_NAME = os.getenv("AUTO_COMPLETE_INDEX_NAME")
 
 try:
     client = MongoClient(DB_URI)
+    videos_client = MongoClient(VIDEOS_DB_URI)
     db = client['sample_mflix']
-    grid_fs = GridFS(db, collection="video_files")
-    grid_fs_bucket = GridFSBucket(db, bucket_name="video_files")
+    videos_db = videos_client['sample_mflix']
+    # grid_fs = GridFS(videos_db, collection="video_files")
+    grid_fs_bucket = GridFSBucket(videos_db, bucket_name="video_files")
     print("Connected to MongoDB successfully!")
 
     if "user" not in db.list_collection_names():
@@ -174,6 +177,12 @@ def create_razorpay_order(user_id):
         if user_data is None:
             response["error"] = "No user exists"
             response["message"] = "No user exists"
+            return response
+        if user_data['plan'] != 'free' or user_data['subscription_end_date'] > datetime.datetime.utcnow():
+            response['error'] = "Subscription Already active"
+            response['message'] = "Subscription Already active"
+            return response
+
 
         razorpay_client = razorpay.Client(auth=(RAZORPAY_ID, RAZORPAY_KEY_SECRET))
         razorpay_response = razorpay_client.order.create(data=rz_data)
@@ -183,7 +192,7 @@ def create_razorpay_order(user_id):
             response["message"] = "Order created"
 
             order_id = razorpay_response['id']
-            payment = Payments(email = user_data["email"], amount = amount_in_paise, razorpay_order_id = order_id, status = "created", creation_time = datetime.datetime.utcnow(), plan = plan)
+            payment = Payments(email = user_data["email"], amount = amount_in_paise, razorpay_order_id = order_id, status = "created", creation_time = int(datetime.datetime.utcnow().timestamp()), plan = plan)
 
             payments_collection.insert_one(payment.to_mongo())
             response['data']['order_id'] = order_id
@@ -586,9 +595,9 @@ def mongo_video():
 
         
         if permission_allowed == False:
-            return Response("Doesn't have access to requested content", 400)
+            return Response("Doesn't have access to requested content", 401)
 
-
+        filename = request.args['filename']
         range_header = request.headers.get('Range')
         if not range_header:
             return Response("Requires Range header", status=400)
@@ -596,7 +605,7 @@ def mongo_video():
 
 
 
-        file  = db['video_files.files'].find_one({"filename":filename})
+        file  = videos_db['video_files.files'].find_one({"filename":filename})
         if file is None:
             return "no video found", 404
 
