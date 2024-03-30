@@ -432,10 +432,11 @@ def forgotpassword():
             data["otp"] = otp
             ver = Verification(email=data["email"],otp=otp,otptype="password",generationtime=(int)(datetime.datetime.utcnow().timestamp()))
             verification_collection.update_one({"email": data["email"], "otptype": "password"}, {"$set": ver.to_mongo()}, upsert=True)
-            response["data"] = {"message": "OTP sent successfully! Please verify OTP to reset password."}
+            response["message"] = "OTP sent successfully! Please verify OTP to reset password."
             return response
         else:
             response["error"] = "User not found!"
+            response["message"] = "User not found!"
             return response
     except Exception as e:
         response["error"] = str(e)
