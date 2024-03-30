@@ -71,7 +71,7 @@ try:
 except ConnectionFailure as e:
     print("Could not connect to MongoDB: %s" % e)
 
-client2 = OpenAI(api_key="OPEN_AI_KEY")
+client2 = OpenAI(api_key=OPEN_AI_KEY)
 def get_embedding(text, model="text-embedding-ada-002"):
   return client2.embeddings.create(input = [text], model=model).data[0].embedding
 
@@ -428,11 +428,12 @@ def forgotpassword():
             send_otp_email(data["email"], otp)
             data["otp"] = otp
             ver = Verification(email=data["email"],otp=otp,otptype="password",generationtime=(int)(datetime.datetime.utcnow().timestamp()))
-            verification_collection.update_one({"email": data["email"], "otptype": "password"}, {"$set": ver.to_mongo()}, upsert=True)
-            response["data"] = {"message": "OTP sent successfully! Please verify OTP to reset password."}
+            verification_collection.update_one({"email": data["email"], "otptype": "password"}, {"$set": {"otp": otp, "generationtime": ver.generationtime}}, upsert=True)
+            response["message"] = "OTP sent successfully! Please verify OTP to reset password."
             return response
         else:
             response["error"] = "User not found!"
+            response["message"] = "User not found!"
             return response
     except Exception as e:
         response["error"] = str(e)
