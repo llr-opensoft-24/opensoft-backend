@@ -17,10 +17,7 @@ from flask_mail import Mail, Message
 import random, string
 from bson import ObjectId
 from gridfs import GridFS, GridFSBucket
-
-from openai import OpenAI
-
-
+from sentence_transformers import SentenceTransformer,util
 
 
 load_dotenv()
@@ -37,7 +34,7 @@ MOVIES_COLLECTION_NAME = os.getenv("MOVIES_COLLECTION_NAME")
 AUTO_COMPLETE_INDEX_NAME = os.getenv("AUTO_COMPLETE_INDEX_NAME")
 
 VECTOR_SEARCH_INDEX_NAME = os.getenv("VECTOR_SEARCH_INDEX_NAME")
-OPEN_AI_KEY = os.getenv("OPEN_AI_KEY")
+# OPEN_AI_KEY = os.getenv("OPEN_AI_KEY")
 
 try:
     client = MongoClient(DB_URI)
@@ -71,10 +68,13 @@ try:
 except ConnectionFailure as e:
     print("Could not connect to MongoDB: %s" % e)
 
-client2 = OpenAI(api_key=OPEN_AI_KEY)
-def get_embedding(text, model="text-embedding-ada-002"):
-  return client2.embeddings.create(input = [text], model=model).data[0].embedding
+# client2 = OpenAI(api_key=OPEN_AI_KEY)
+# def get_embedding(text, model="text-embedding-ada-002"):
+#   return client2.embeddings.create(input = [text], model=model).data[0].embedding
 
+model = SentenceTransformer("all-mpnet-base-v2")
+def get_embedding(text):    
+    return (model.encode(text,convert_to_tensor=False)).tolist()
 
 @app.after_request
 def add_cors_headers(response):
@@ -524,7 +524,7 @@ def search_movies(user_id):
           {
             '$vectorSearch': {
               'index': VECTOR_SEARCH_INDEX_NAME, 
-              'path': 'plot_embedding', 
+              'path': 'SBERT_embeddings',
               'queryVector': query_vector,
               'numCandidates': 150, 
               'limit': 20
