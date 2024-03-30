@@ -180,12 +180,11 @@ def create_razorpay_order(user_id):
         user_collection = db["user"]
         user_data = user_collection.find_one({"_id":ObjectId(user_id)})
         payments_collection = db["payments"]
-        
         if user_data is None:
             response["error"] = "No user exists"
             response["message"] = "No user exists"
             return response
-        if user_data['plan'] != 'free' or user_data['subscription_end_date'] > datetime.datetime.utcnow():
+        if user_data['plan'] != 'free' and user_data['subscription_end_date'] > (int)(datetime.datetime.utcnow().timestamp()):
             response['error'] = "Subscription Already active"
             response['message'] = "Subscription Already active"
             return response
@@ -197,10 +196,8 @@ def create_razorpay_order(user_id):
 
         if order_status =="created":
             response["message"] = "Order created"
-
             order_id = razorpay_response['id']
             payment = Payments(email = user_data["email"], amount = amount_in_paise, razorpay_order_id = order_id, status = "created", creation_time = (int)(datetime.datetime.utcnow().timestamp()), plan = plan)
-
             payments_collection.insert_one(payment.to_mongo())
             response['data']['order_id'] = order_id
             response['data']['order_status'] = order_status
