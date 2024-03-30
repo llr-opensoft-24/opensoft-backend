@@ -537,9 +537,9 @@ def search_movies(user_id):
             }
           
         ])
-        autocomplete_result_result = list(autocomplete_result_result)
+        autocomplete_result = list(autocomplete_result)
         vector_result = list(vector_result)
-        combined_result = vector_result + autocomplete_result_result
+        combined_result = vector_result + autocomplete_result
         def num_reviews_key(movie):
             if "tomatoes" in movie and movie["tomatoes"] is not None and "viewer" in movie["tomatoes"] and movie["tomatoes"]["viewer"] is not None and "numReviews" in movie["tomatoes"]["viewer"] and movie["tomatoes"]["viewer"]["numReviews"] is not None:
                 x = int(movie["tomatoes"]["viewer"]["numReviews"])
