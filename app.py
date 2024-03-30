@@ -557,7 +557,7 @@ def search_movies(user_id):
         for movie in combined_list:
             if movie['title'] not in titles_added: 
                 titles_added.append(movie['title'])
-                results_titles.append({"title":movie['title'],"score":movie["score"],"plot":movie["plot"]})
+                results_titles.append({"title":movie['title'],"score":movie["score"]})
             if(len(results_titles) == 10):
                 break
         results_titles = sorted(results_titles, key=lambda x: x['score'])
