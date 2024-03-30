@@ -17,10 +17,7 @@ from flask_mail import Mail, Message
 import random, string
 from bson import ObjectId
 from gridfs import GridFS, GridFSBucket
-
-from openai import OpenAI
-
-
+from sentence_transformers import SentenceTransformer,util
 
 
 load_dotenv()
@@ -35,9 +32,8 @@ JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 DB_NAME = os.getenv("DB_NAME")
 MOVIES_COLLECTION_NAME = os.getenv("MOVIES_COLLECTION_NAME")
 AUTO_COMPLETE_INDEX_NAME = os.getenv("AUTO_COMPLETE_INDEX_NAME")
-
 VECTOR_SEARCH_INDEX_NAME = os.getenv("VECTOR_SEARCH_INDEX_NAME")
-OPEN_AI_KEY = os.getenv("OPEN_AI_KEY")
+
 
 try:
     client = MongoClient(DB_URI)
@@ -71,10 +67,10 @@ try:
 except ConnectionFailure as e:
     print("Could not connect to MongoDB: %s" % e)
 
-client2 = OpenAI(api_key=OPEN_AI_KEY)
-def get_embedding(text, model="text-embedding-ada-002"):
-  return client2.embeddings.create(input = [text], model=model).data[0].embedding
 
+model = SentenceTransformer("all-mpnet-base-v2")
+def get_embedding(text):    
+    return (model.encode(text,convert_to_tensor=False)).tolist()
 
 @app.after_request
 def add_cors_headers(response):
@@ -479,12 +475,12 @@ def search_movies(user_id):
     response["data"] = {}
     response["message"] = ''
     try:
-        collection1 = db['movies']
-        collection2 = db['embedded_movies']
+        movies_collection = db['movies']
+        embedded_movies_collection = db['embedded_movies']
         query = request.args.get('q')
         query_vector = get_embedding(query)
     
-        db_result = collection1.aggregate([
+        autocomplete_result = movies_collection.aggregate([
             {
                 '$search': {
                     'index': AUTO_COMPLETE_INDEX_NAME,
@@ -520,11 +516,11 @@ def search_movies(user_id):
             }
         ])
         
-        vector_result = collection2.aggregate([
+        vector_result = embedded_movies_collection.aggregate([
           {
             '$vectorSearch': {
               'index': VECTOR_SEARCH_INDEX_NAME, 
-              'path': 'plot_embedding', 
+              'path': 'SBERT_embeddings',
               'queryVector': query_vector,
               'numCandidates': 150, 
               'limit': 20
@@ -541,20 +537,20 @@ def search_movies(user_id):
             }
           
         ])
-        db_result = list(db_result)
+        autocomplete_result = list(autocomplete_result)
         vector_result = list(vector_result)
-        combined_list = vector_result + db_result
+        combined_result = vector_result + autocomplete_result
         def num_reviews_key(movie):
             if "tomatoes" in movie and movie["tomatoes"] is not None and "viewer" in movie["tomatoes"] and movie["tomatoes"]["viewer"] is not None and "numReviews" in movie["tomatoes"]["viewer"] and movie["tomatoes"]["viewer"]["numReviews"] is not None:
                 x = int(movie["tomatoes"]["viewer"]["numReviews"])
             else:
                 x = 0
             return x
-        combined_list.sort(key=num_reviews_key)
+        combined_result.sort(key=num_reviews_key)
         titles_added = []
         results_titles = []
-        combined_list.reverse()
-        for movie in combined_list:
+        combined_result.reverse()
+        for movie in combined_result:
             if movie['title'] not in titles_added: 
                 titles_added.append(movie['title'])
                 results_titles.append({"title":movie['title'],"score":movie["score"]})
@@ -568,7 +564,7 @@ def search_movies(user_id):
         results = []
         projection =  {"plot_embedding": 0, "tomatoes": 0, "_id":0}
         for movie in results_titles:
-            results.append(collection1.find_one({"title": movie["title"]},projection))
+            results.append(movies_collection.find_one({"title": movie["title"]},projection))
         response["data"]= results
 
     except Exception as e:
