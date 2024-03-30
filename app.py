@@ -671,8 +671,12 @@ def mongo_video():
         start = range_header.split("=")[1].split("-")[0]
         start = int(start)
         
-
-        end = video_size -1
+        if start == 0:
+            end = min(start + 10240, video_size - 1)
+        else:
+            end = video_size - 1
+        
+        # end = video_size -1
         content_length = int(end) - int(start) + 1
 
         headers = {
