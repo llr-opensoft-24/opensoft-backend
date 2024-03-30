@@ -637,9 +637,9 @@ def mongo_video():
         permission_allowed = False
 
 
-        if user_plan == 'free' and requested_video_plan == 'free' and (requested_resolution in ['480p', '720p']):
+        if user_plan == 'free' and requested_video_plan == 'free' and (requested_resolution in ['360p', '480p', '720p']):
             permission_allowed = True
-        if user_plan == 'pro' and requested_video_plan in ['free', 'pro'] and (requested_resolution in ['480p', '720p', '1080p']):
+        if user_plan == 'pro' and requested_video_plan in ['free', 'pro'] and (requested_resolution in ['360p', '480p', '720p', '1080p']):
             permission_allowed = True
         if user_plan == 'premium':
             permission_allowed = True
@@ -652,8 +652,6 @@ def mongo_video():
         range_header = request.headers.get('Range')
         if not range_header:
             return Response("Requires Range header", status=400)
-
-
 
 
         file  = videos_db['video_files.files'].find_one({"filename":filename})
